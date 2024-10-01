@@ -1,0 +1,97 @@
+#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include <DHT.h>
+
+#define ADVERTISING_INTERVAL 10000 // Advertising interval in milliseconds
+#define DHTPIN 19                  // GPIO pin for DHT11 sensor
+#define DHTTYPE DHT11              // DHT11 sensor type
+
+BLEAdvertising *pAdvertising;
+DHT dht(DHTPIN, DHTTYPE);        // Create DHT object
+float humidity = 0.0;            // Variable to store humidity value
+
+void updateAdvertisingData() {
+  // Create new advertising data
+  BLEAdvertisementData advertisementData;
+
+  // Read humidity from DHT11 sensor
+  humidity = dht.readHumidity();
+
+  // Convert humidity to a string with decimal precision
+  String humidityString = String(humidity, 1); // 1 decimal place
+
+  // Convert the string to byte array
+  uint8_t humidityData[humidityString.length() + 1];
+  humidityString.getBytes(humidityData, humidityString.length() + 1);
+
+  // Set the service UUID and the custom data
+  advertisementData.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
+  advertisementData.setName("ESP32-C3");
+
+  // Add manufacturer data (example manufacturer ID 0xFFFF)
+  String manufacturerData;
+  manufacturerData += (char)0xFF;  // Manufacturer ID byte 1
+  manufacturerData += (char)0xFF;  // Manufacturer ID byte 2
+  manufacturerData += String((char*)humidityData, humidityString.length());  // Humidity data
+
+  advertisementData.setManufacturerData(manufacturerData);
+
+  // Set the new advertising data
+  pAdvertising->setAdvertisementData(advertisementData);
+}
+
+void stopBLE() {
+  pAdvertising->stop();
+  delay(100); // Ensure advertising is stopped
+  BLEDevice::deinit();
+  delay(100); // Ensure BLE is properly shut down
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize BLE
+  BLEDevice::init("ESP32-C3");
+
+  // Create BLE server
+  BLEServer *pServer = BLEDevice::createServer();
+
+  // Create BLE advertising
+  pAdvertising = pServer->getAdvertising();
+
+  // Set advertising parameters for non-connectable and non-scannable advertising
+  pAdvertising->setScanResponse(false);
+  pAdvertising->setMinInterval(60); // Set advertising interval (0x500 = 1280 in decimal, 1280 * 0.625 ms = 800 ms)
+  pAdvertising->setMaxInterval(0x60);
+  pAdvertising->setAdvertisementType(ADV_TYPE_NONCONN_IND);
+
+  // Initialize DHT sensor
+  dht.begin();
+
+  // Update advertising data for the first time
+  updateAdvertisingData();
+
+  // Start advertising
+  pAdvertising->start();
+  Serial.println("Advertising started...");
+}
+
+void loop() {
+  static unsigned long lastAdvertisingUpdate = 0;
+  if (millis() - lastAdvertisingUpdate > ADVERTISING_INTERVAL) {
+    lastAdvertisingUpdate = millis();
+
+    // Stop advertising and deinitialize BLE
+    stopBLE();
+
+    // Update the advertising data
+    updateAdvertisingData();
+
+    // Start advertising again
+    pAdvertising->start();
+    Serial.print("Advertising humidity value: ");
+    Serial.println(humidity, 1); // Print humidity with 1 decimal place
+  }
+}

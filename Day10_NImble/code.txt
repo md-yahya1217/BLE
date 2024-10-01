@@ -1,0 +1,359 @@
+
+The project’s directory structure looks like this:
+!"" CMakeLists.txt
+!"" nrf52840dongle_nrf52840.overlay
+!"" nrf52840dk_nrf52840.overlay
+!"" prj.conf
+%"" src
+!"" bme280.c
+!"" bme280.h
+%"" main.c
+The CMakeLists.txt file specifies that the project’s sources are in two files: src/bme280.c
+and src/main.c:
+29 There are various hardware variants of the RuuviTag. In recent versions, the Sensirion SHTC3 sensor
+(which is also supported by Zephyr) has replaced the Bosch BME280 with an alternative. See https://f.
+ruuvi.com/t/ruuvitag-hw-versions/5150/3 for more information.
+! 84
+Bluetooth Low Energy Applications
+# SPDX-License-Identifier: MIT
+cmake_minimum_required(VERSION 3.13.1)
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(advertise_bme280)
+target_sources(app PRIVATE src/bme280.c src/main.c)
+Then there’s the nrf52840dongle_nrf52840.overlay file:
+/*
+* Copyright (c) 2021 Koen Vervloesem <koen@vervloesem.eu>
+*
+* SPDX-License-Identifier: MIT
+*/
+/*
+* Configuration of a BME280 device on an I2C bus.
+*
+* Device address 0x76 is assumed. Your device may have a different
+* address; check your device documentation if unsure.
+*/
+&i2c0 {
+status = "okay";
+sda-pin = <31>;
+scl-pin = <29>;
+bme280@76 {
+compatible = "bosch,bme280";
+reg = <0x76>;
+label = "BME280_I2C";
+};
+};
+A devicetree is a hierarchical data structure that describes hardware. Zephyr uses a devicetree
+to describe the hardware available on its supported boards. If you look up the Ruuvi-
+Tag’s devicetree, (in zephyr/boards/arm/ruuvi_ruuvitag/ruuvi_ruuvitag.dts), you’ll see
+that it defi nes a BME280 sensor on the SPI bus. Obviously, the nRF52840 Dongle’s devicetree
+(in zephyr/boards/arm/nrf52840dongle_nrf52840/nrf52840dongle_nrf52840.
+dts) lacks the BME280 sensor defi nition, because one isn’t built in.
+However, you can add a defi nition with a devicetree overlay. This overlay defi nes a
+BME280 sensor on the I²C bus with SDA pin 31 and SCL pin 29, with address 0x76. So, with
+this overlay, you can use the BME280 sensor connected to pins 0.31 (SDA) and 0.29 (SCL).
+Note: The Adafruit BME280 breakout boards have a default I²C address of 0x77, while
+many other boards use I²C address 0x76. Change the address in the devicetree overlay
+according to your breakout board.
+! 85
+Chapter 3 • Broadcasting data with advertisements
+Because the devicetree overlay’s fi lename is the board name, nrf52840dongle_nrf52840,
+with the .overlay extension, Zephyr’s build system automatically detects if you’re building
+the project for the nRF52840 Dongle. If you’re building the project for another board, it will
+ignore this overlay. I’ve also added an nrf52840dk_nrf52840.overlay devicetree overlay
+with the same content if you want to run this example on an nRF52840 Development Kit.
+The prj.conf fi le enables Bluetooth, I²C, the sensor subsystem, and the BME280 component:
+# Enable Bluetooth
+CONFIG_BT=y
+# Enable BME280 sensor
+CONFIG_I2C=y
+CONFIG_SENSOR=y
+CONFIG_B ME280=y
+3.10.3 Source code
+The bme280.c fi le has functions to:
+• get a devicetree node describing a Bosch BME280 sensor
+• fetch a sample of the sensor
+• read the temperature
+• read the pressure
+• read the humidity
+/*
+* Read BME280 sensor data.
+*
+* Copyright (c) 2021 Koen Vervloesem
+*
+* SPDX-License-Identifier: MIT
+*/
+#include <device.h>
+#include <devicetree.h>
+#include <drivers/sensor.h>
+#include <sys/printk.h>
+#include <zephyr/types.h>
+/*
+* Get a device structure from a devicetree node with compatible
+* "bosch,bme280". (If there are multiple, just pick one.)
+*/
+const struct device *bme280_get_device(void) {
+! 86
+Bluetooth Low Energy Applications
+const struct device *dev = DEVICE_DT_GET_ANY(bosch_bme280);
+if (dev == NULL) {
+/* No such node, or the node does not have status "okay". */
+printk("\nError: no device found.\n");
+return NULL;
+}
+if (!device_is_ready(dev)) {
+printk("\nError: Device \"%s\" is not ready; "
+"check the driver initialization logs for errors.\n",
+dev->name);
+return NULL;
+}
+printk("Found device \"%s\", getting sensor data\n", dev->name);
+return dev;
+}
+void bme280_fetch_sample(const struct device *dev) {
+sensor_sample_fetch(dev);
+}
+int16_t bme280_get_temperature(const struct device *dev) {
+struct sensor_value temperature;
+sensor_channel_get(dev, SENSOR_CHAN_AMBIENT_TEMP, &temperature);
+return (int16_t)(temperature.val1 * 100 + temperature.val2 / 10000);
+}
+uint16_t bme280_get_pressure(const struct device *dev) {
+struct sensor_value pressure;
+uint32_t p; // Pressure without offset
+sensor_channel_get(dev, SENSOR_CHAN_PRESS, &pressure);
+p = (uint32_t)(pressure.val1 * 1000 + pressure.val2 / 10000);
+return (uint16_t)(p - 50000);
+}
+uint16_t bme280_get_humidity(const struct device *dev) {
+struct sensor_value humidity;
+sensor_channel_get(dev, SENSOR_CHAN_HUMIDITY, &humidity);
+return (uint16_t)(humidity.val1 * 100 + humidity.val2 / 10000);
+}
+! 87
+Chapter 3 • Broadcasting data with advertisements
+An in-depth explanation of these functions is out this book’s scope. For this program, it suffi
+ces to know that sensor devices in Zephyr return their results as a sensor_value struct with
+two int32_t members: val1 is the integer part of the value and val2 is the fractional part of
+the value, in one-millionth parts. The calculations in the functions to read the temperature,
+pressure, and humidity are just meant to be able to store the values as 16-bit integers.
+You can read a more in-depth explanation in Zephyr’s documentation about the sensor
+subsystem (https://docs.zephyrproject.org/latest/reference/peripherals/sensor.html).
+Note: Most pressure values will be around 100,000 Pa (1000 hPa). The function to
+read the pressure value subtracts 50,000 Pa so that the code can store this value in a
+16-bit unsigned integer (the range is from 0 to 65,535). This is a trick I learned from
+the advertising data format of the original RuuviTag fi rmware (https://docs.ruuvi.com/
+communication/bluetooth-advertisements/data-format-5-rawv2).
+The corresponding header fi le with the function declarations looks like this:
+/*
+* Read BME280 sensor data.
+*
+* Copyright (c) 2021 Koen Vervloesem
+*
+* SPDX-License-Identifier: MIT
+*/
+#ifndef BME280_H_
+#define BME280_H_
+const struct device *bme280_get_device(void);
+void bme280_fetch_sample(const struct device *dev);
+int16_t bme280_get_temperature(const struct device *dev);
+uint16_t bme280_get_pressure(const struct device *dev);
+uint16_t bme280_get_humidity(const struct device *dev);
+#endif /* BME280_H_ */
+Then, the main C fi le looks like this:
+/*
+* Advertise BME280 sensor data in BLE manufacturer-specific data.
+*
+* Copyright (c) 2021 Koen Vervloesem
+*
+* SPDX-License-Identifier: MIT
+*/
+! 88
+Bluetooth Low Energy Applications
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/hci.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <sys/printk.h>
+#include <sys/util.h>
+#include <zephyr/types.h>
+#include "bme280.h"
+#define ADV_PARAM \
+BT_LE_ADV_PARAM(0, BT_GAP_ADV_SLOW_INT_MIN, \
+BT_GAP_ADV_SLOW_INT_MAX, NULL)
+static struct bt_data ad[] = {
+BT_DATA_BYTES(BT_DATA_FLAGS, BT_LE_AD_NO_BREDR),
+BT_DATA_BYTES(
+BT_DATA_MANUFACTURER_DATA, 0xff, 0xff, /* Test company ID */
+0x00, 0x00, /* Temperature, int16, little-endian */
+0x00, 0x00, /* Pressure - 50000, uint16, little-endian */
+0x00, 0x00) /* Humidity, uint16, little-endian */
+};
+void update_ad_bme280(const struct device *dev) {
+int16_t temperature;
+uint16_t pressure, humidity;
+bme280_fetch_sample(dev);
+temperature = bme280_get_temperature(dev);
+memcpy(&(ad[1].data[2]), &temperature, 2);
+pressure = bme280_get_pressure(dev);
+memcpy(&(ad[1].data[4]), &pressure, 2);
+humidity = bme280_get_humidity(dev);
+memcpy(&(ad[1].data[6]), &humidity, 2);
+}
+void main(void) {
+int err;
+printk("Starting firmware...\n");
+// Initialize BME280
+const struct device *bme280 = bme280_get_device();
+! 89
+Chapter 3 • Broadcasting data with advertisements
+if (bme280 == NULL) {
+return;
+}
+// Initialize the Bluetooth subsystem
+err = bt_enable(NULL);
+if (err) {
+printk("Bluetooth init failed (err %d)\n", err);
+return;
+}
+printk("Bluetooth initialized\n");
+// Start advertising sensor values
+update_ad_bme280(bme280);
+err = bt_le_adv_start(ADV_PARAM, ad, ARRAY_SIZE(ad), NULL, 0);
+if (err) {
+printk("Advertising failed to start (err %d)\n", err);
+return;
+}
+while (1) {
+k_sleep(K_MSEC(980));
+// Update advertised sensor values
+update_ad_bme280(bme280);
+err = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), NULL, 0);
+if (err) {
+printk("Advertising update failed (err %d)\n", err);
+return;
+}
+}
+}
+This is actually not much more complex than the iBeacon example. First, be sure to include
+the BME280 functions’ header fi le. After this, the code consists of three parts: defi ne the
+advertising parameters and advertising data, defi ne a function to update these advertising
+data with sensor values, and then the main() function.
+In the iBeacon example, you just used BT_LE_ADV_NCONN for the advertising parameters.
+As you saw there, this is a macro that comes down to non-connectable advertising
+with its default Bluetooth ID, a private address, no special advertising options, and an advertising
+interval of between 100 ms and 150 ms.
+! 90
+Bluetooth Low Energy Applications
+In this case, you don’t want to advertise every 100 ms. You’re probably fi ne with a new
+sensor value every second. So, how do you change this? Return to section 3.9.3 for the
+BT_LE_ADV_NCONN macro. You can use its expansion, but with other values for the minimum
+and maximum advertising interval:
+#define ADV_PARAM BT_LE_ADV_PARAM(0, BT_GAP_ADV_SLOW_INT_MIN,BT_GAP_ADV_SLOW_INT_
+MAX, NULL)
+You can fi nd the defi nition of the interval values in bluetooth/gap.h:
+#define BT_GAP_ADV_SLOW_INT_MIN 0x0640 /* 1 s */
+#define BT_GAP_ADV_SLOW_INT_MAX 0x0780 /* 1.2 s */
+As in the iBeacon example, the advertising data in the bt_data struct consists of two advertising
+data structures: fl ags and manufacturer-specifi c data. For the manufacturer-specifi c
+data, this code uses test company ID 0xff ff , and the next six bytes contain the sensor’s
+measured temperature, pressure, and humidity. These are initially just fi lled with 0s, because
+the program will update them later.
+Updating the manufacturer-specifi c data with new sensor values is the task of the update_
+ad_bme280() function. Its single argument is a pointer to a device struct. With bme280_
+fetch_sample(dev) (one of the functions defi ned in bme280.c) you fetch a sample from
+the sensor and store it in a BME280 driver internal buff er. Then, you read the sensor’s
+temperature, pressure, and humidity (again with the functions you defi ned in bme280.c).
+You copy each of these results to the appropriate position in the advertising data.
+For instance, have a look at the temperature, which is copied like this:
+memcpy(&(ad[1].data[2]), &temperature, 2);
+Now look at the advertisement data you have defi ned after t he temperature is copied:
+Figure 3.16 The advertisement data with the BME280 sensor data in Zephyr
+With ad[1] you select the advertising data structure with the manufacturer-specifi c data.
+The data fi eld then points to the bytes of the manufacturer-specifi c data. There, the third
+and fourth bytes correspond to the temperature. So, &(ad[1].data[2]) is the address of
+! 91
+Chapter 3 • Broadcasting data with advertisements
+this third byte in the manufacturer-specific data, and the memcpy() function copies the
+two temperature bytes to this location.
+The main() function first initializes the BME280 sensor and then initializes the Bluetooth
+subsystem. If both initializations succeed, it calls update_ad_bme280(bme280) to update
+the manufacturer-specific data with new sensor values. Then, you start advertising
+with the bt_le_adv_start() function. Note that for the advertising parameters you use the
+ADV_PARAM macro you defined before.
+After this first advertising event, you don’t have to stop advertising, update the advertising
+data, and the start advertising again; Zephyr has a function specifically to update
+advertising data when you’re already advertising: bt_le_adv_update_data(). It has the
+same arguments as the bt_le_adv_start() function, but without the advertising parameters
+(which stay the same). So, the rest of the program is just an infinite loop where you
+update the advertising data structure with the sensor values and then propagate this new
+data to the advertising that is in progress.
+Now, build and flash the firmware. Then, confirm with the nRF Connect mobile app or with
+Wireshark that your sensor board is indeed advertising every second.
+Figure 3.17 You can see your sensor board’s manufacturer-specific data in nRF Connect.
+Note that the data is sent little-endian: 0x0e0a is actually 0x0a0e or 2574 (25.74 °C).
+Note: A helpful display filter in Wireshark for displaying only your own devices (which
+use the test company ID in manufacturer-specific data) is btcommon.eir_ad.entry.
+company_id == 0xffff.
+! 92
+Bluetooth Low Energy Applications
+3.10.4 Decoding the BME280 sensor data
+Now that your sensor board is advertising the BME280 sensor’s temperature, pressure, and
+humidity, it’s time to decode its manufacturer-specifi c data.
+With Bleak and Construct, it’s quite easy to decode this data:
+"""Read BME280 sensor values from BLE advertisement data.
+Copyright (c) 2022 Koen Vervloesem
+SPDX-License-Identifier: MIT
+"""
+import asyncio
+from construct import Int16sl, Int16ul, Struct
+from construct.core import StreamError
+from bleak import BleakScanner
+from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
+bme280_format = Struct(
+"temperature" / Int16sl,
+"pressure" / Int16ul,
+"humidity" / Int16ul,
+)
+def device_found(
+device: BLEDevice, advertisement_data: AdvertisementData
+):
+"""Decode BME280 sensor values from advertisement data."""
+try:
+data = advertisement_data.manufacturer_data[0xFFFF]
+sensor_data = bme280_format.parse(data)
+print(f"Device : {device.name}")
+print(f"Temperature: {sensor_data.temperature / 100} °C")
+print(f"Humidity : {sensor_data.humidity / 100} %")
+print(
+f"Pressure : {(sensor_data.pressure + 50000) / 100} hPa"
+)
+print(24 * "-")
+except KeyError:
+# Test company ID (0xffff) not found
+pass
+except StreamError:
+! 93
+Chapter 3 • Broadcasting data with advertisements
+# Wrong format
+pass
+async def main():
+"""Register detection callback and scan for devices."""
+scanner = BleakScanner()
+scanner.register_detection_callback(device_found)
+while True:
+await scanner.start()
+await asyncio.sleep(1.0)
+await scanner.stop()
+asyncio.run(main())
+In the beginning, you defi ne a struct with the three fi elds in your manufacturer-specifi c
+data: a signed 16-bit integer and two unsigned 16-bit integers, all of them little-endian.
+Then, in the callback function that’s called on any found device (device_found()), you look
+for the manufacturer-specifi c data for company ID 0xff ff and parse it with the Construct
+struct. If this works, the code shows the temperature, humidity, and pressure. The temperature
+and humidity should only be divided by 100 to get the real value. For the pressure,
+you fi rst need to add the off set of 50,000 Pa that the bme280_get_pressure() function
+in bme280.c previously subtracted in order to fi t the value into a 16-bit unsigned integer.
+Then, you need only some error handling. If the manufacturer-specifi c data is of another
+company ID, just ignore it. And, if parsing the data with Construct results in a StreamError,
+also ignore it.
